@@ -122,6 +122,36 @@ Na primeira execução:
 
 ---
 
+## ☁️ Deploy no Render
+
+O projeto inclui um [`render.yaml`](render.yaml) pronto para deploy one-click.
+
+### Passos
+
+1. Acesse [render.com](https://render.com) e faça login com GitHub
+2. Clique em **New → Blueprint**
+3. Conecte seu repositório `ai-data-analyst`
+4. Render detecta o `render.yaml` e cria o serviço automaticamente
+5. Em **Environment**, cole sua chave:
+   - `ANTHROPIC_API_KEY` = `sk-ant-...`
+6. Clique em **Apply** — o build leva ~3 minutos
+
+### URL pública
+
+Após o deploy, seu app fica em `https://ai-data-analyst-xxxx.onrender.com`.
+
+> ⚠️ **Plano free hiberna após 15 min de inatividade.** A primeira request depois da hibernação demora ~30 segundos (cold start). Para portfólio e demos é aceitável.
+
+### Como o `render.yaml` funciona
+
+```yaml
+startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 ...
+```
+
+Render injeta a porta via `$PORT`. O bind em `0.0.0.0` permite tráfego externo (ao contrário do `localhost` local). Secrets marcados com `sync: false` (como a API key) precisam ser preenchidos manualmente no dashboard — nunca ficam no YAML.
+
+---
+
 ## 💬 Exemplos de perguntas
 
 - *Qual o total de vendas por região?*
