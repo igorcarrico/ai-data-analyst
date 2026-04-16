@@ -5,6 +5,7 @@ Orchestrates: NL question -> LLM SQL -> validator -> executor -> table + chart +
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from hashlib import sha1
 from io import BytesIO
 
@@ -63,6 +64,142 @@ def _dataframe_to_xlsx(df: pd.DataFrame) -> bytes:
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Resultado")
     return buffer.getvalue()
+
+
+def _build_pdf_report(payload: dict) -> bytes:
+    """Assemble a PDF with question, SQL, chart image, table preview and insights."""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import cm
+    from reportlab.platypus import (
+        Image as RLImage,
+        Paragraph,
+        Preformatted,
+        SimpleDocTemplate,
+        Spacer,
+        Table,
+        TableStyle,
+    )
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        topMargin=1.5 * cm,
+        bottomMargin=1.5 * cm,
+        leftMargin=1.8 * cm,
+        rightMargin=1.8 * cm,
+        title="AI Data Analyst - Relatorio",
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = styles["Title"]
+    h2_style = styles["Heading2"]
+    body_style = styles["BodyText"]
+    code_style = ParagraphStyle(
+        "SQLCode",
+        parent=styles["Code"],
+        fontSize=9,
+        leading=12,
+        backColor=colors.whitesmoke,
+        borderPadding=6,
+    )
+
+    story: list = []
+    story.append(Paragraph("AI Data Analyst - Relatorio", title_style))
+    story.append(Paragraph(
+        f"Gerado em {datetime.now():%Y-%m-%d %H:%M}", body_style,
+    ))
+    story.append(Spacer(1, 12))
+
+    story.append(Paragraph("Pergunta", h2_style))
+    story.append(Paragraph(payload["question"], body_style))
+    story.append(Spacer(1, 8))
+
+    story.append(Paragraph("SQL gerada", h2_style))
+    story.append(Preformatted(payload["sql"], code_style))
+    story.append(Spacer(1, 8))
+
+    df = payload.get("dataframe")
+    if df is not None and not df.empty:
+        try:
+            fig = build_chart(df)
+            if fig is not None:
+                img_bytes = fig.to_image(format="png", width=900, height=500, scale=2)
+                story.append(Paragraph("Visualizacao", h2_style))
+                story.append(RLImage(BytesIO(img_bytes), width=16 * cm, height=9 * cm))
+                story.append(Spacer(1, 8))
+        except Exception as exc:
+            logger.warning("pdf chart embed failed: %s", exc)
+
+        story.append(Paragraph("Resultado", h2_style))
+        preview = df.head(50)
+        table_data = [list(preview.columns)] + preview.astype(str).values.tolist()
+        table = Table(table_data, repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#4A4A4A")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F5F5F5")]),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+        story.append(table)
+        if len(df) > 50:
+            story.append(Paragraph(
+                f"<i>(Preview: 50 de {len(df)} linhas. Para dataset completo, baixe CSV/XLSX.)</i>",
+                body_style,
+            ))
+        story.append(Spacer(1, 8))
+
+    if payload.get("insights"):
+        story.append(Paragraph("Insights", h2_style))
+        insights_html = payload["insights"].replace("\n", "<br/>")
+        story.append(Paragraph(insights_html, body_style))
+
+    doc.build(story)
+    return buffer.getvalue()
+
+
+def _get_pdf_bytes(payload: dict) -> bytes | None:
+    """Lazy-build the PDF once and cache it in the payload dict."""
+    if payload.get("pdf_bytes") is not None:
+        return payload["pdf_bytes"]
+    try:
+        payload["pdf_bytes"] = _build_pdf_report(payload)
+        return payload["pdf_bytes"]
+    except Exception as exc:
+        logger.exception("pdf build failed")
+        payload["pdf_error"] = str(exc)
+        return None
+
+
+def _render_pdf_button(payload: dict, key_prefix: str) -> None:
+    """Two-step button: 'Gerar PDF' triggers build, then download button appears."""
+    pdf_ready_key = f"pdf_ready_{key_prefix}"
+
+    if st.session_state.get(pdf_ready_key) and payload.get("pdf_bytes"):
+        st.download_button(
+            label="⬇️ Baixar PDF",
+            data=payload["pdf_bytes"],
+            file_name=f"relatorio_{key_prefix}.pdf",
+            mime="application/pdf",
+            key=f"dl_pdf_{key_prefix}",
+            width="stretch",
+        )
+        return
+
+    if st.button("📄 Gerar PDF", key=f"gen_pdf_{key_prefix}", width="stretch"):
+        with st.spinner("Montando relatório (pode levar alguns segundos)..."):
+            pdf_bytes = _get_pdf_bytes(payload)
+        if pdf_bytes:
+            st.session_state[pdf_ready_key] = True
+            st.rerun()
+        else:
+            err = payload.get("pdf_error", "erro desconhecido")
+            st.error(f"Falha ao gerar PDF: {err}")
 
 
 def _run_pipeline(question: str) -> dict:
@@ -284,7 +421,7 @@ def _render_result(payload: dict, key_prefix: str = "latest") -> None:
         else:
             st.caption(meta_line)
 
-        dl_csv, dl_xlsx = st.columns(2)
+        dl_csv, dl_xlsx, dl_pdf = st.columns(3)
         with dl_csv:
             st.download_button(
                 label="📥 CSV",
@@ -296,13 +433,15 @@ def _render_result(payload: dict, key_prefix: str = "latest") -> None:
             )
         with dl_xlsx:
             st.download_button(
-                label="📊 XLSX (Excel)",
+                label="📊 XLSX",
                 data=_dataframe_to_xlsx(df),
                 file_name=f"resultado_{key_prefix}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key=f"dl_xlsx_{key_prefix}",
                 width="stretch",
             )
+        with dl_pdf:
+            _render_pdf_button(payload, key_prefix)
     with col_right:
         fig = build_chart(df)
         if fig is not None:
@@ -349,7 +488,7 @@ def _render_comparison_panel(payload: dict, key_prefix: str) -> None:
         meta_line += " · ⚡ cache hit"
     st.caption(meta_line)
 
-    dl_csv, dl_xlsx = st.columns(2)
+    dl_csv, dl_xlsx, dl_pdf = st.columns(3)
     with dl_csv:
         st.download_button(
             label="📥 CSV",
@@ -368,6 +507,8 @@ def _render_comparison_panel(payload: dict, key_prefix: str) -> None:
             key=f"dl_xlsx_{key_prefix}",
             width="stretch",
         )
+    with dl_pdf:
+        _render_pdf_button(payload, key_prefix)
 
     if payload["insights"]:
         with st.expander("💡 Insights", expanded=True):
