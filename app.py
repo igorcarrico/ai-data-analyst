@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import time
 from hashlib import sha1
+from io import BytesIO
 
 import pandas as pd
 import streamlit as st
@@ -55,6 +56,13 @@ def _init_session_state() -> None:
 
 def _cache_key(question: str) -> str:
     return sha1(question.strip().lower().encode("utf-8")).hexdigest()
+
+
+def _dataframe_to_xlsx(df: pd.DataFrame) -> bytes:
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Resultado")
+    return buffer.getvalue()
 
 
 def _run_pipeline(question: str) -> dict:
@@ -267,13 +275,25 @@ def _render_result(payload: dict, key_prefix: str = "latest") -> None:
         else:
             st.caption(meta_line)
 
-        st.download_button(
-            label="📥 Baixar CSV",
-            data=df.to_csv(index=False).encode("utf-8"),
-            file_name=f"resultado_{key_prefix}.csv",
-            mime="text/csv",
-            key=f"dl_{key_prefix}",
-        )
+        dl_csv, dl_xlsx = st.columns(2)
+        with dl_csv:
+            st.download_button(
+                label="📥 CSV",
+                data=df.to_csv(index=False).encode("utf-8"),
+                file_name=f"resultado_{key_prefix}.csv",
+                mime="text/csv",
+                key=f"dl_csv_{key_prefix}",
+                width="stretch",
+            )
+        with dl_xlsx:
+            st.download_button(
+                label="📊 XLSX (Excel)",
+                data=_dataframe_to_xlsx(df),
+                file_name=f"resultado_{key_prefix}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"dl_xlsx_{key_prefix}",
+                width="stretch",
+            )
     with col_right:
         fig = build_chart(df)
         if fig is not None:
