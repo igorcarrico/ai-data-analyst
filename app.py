@@ -89,19 +89,42 @@ def _run_pipeline(question: str) -> dict:
             "blocked": True,
         }
 
-    raw_sql = client.generate_sql(question)
-    validation = validate_sql(raw_sql)
+    try:
+        raw_sql = client.generate_sql(question)
+        validation = validate_sql(raw_sql)
 
-    if not validation.is_valid:
-        retry_sql = client.generate_sql(question, error_context=validation.error or "")
-        validation = validate_sql(retry_sql)
-        raw_sql = retry_sql
+        if not validation.is_valid:
+            retry_sql = client.generate_sql(question, error_context=validation.error or "")
+            validation = validate_sql(retry_sql)
+            raw_sql = retry_sql
 
-    result: QueryResult = run_query(raw_sql)
+        result: QueryResult = run_query(raw_sql)
 
-    if not result.ok:
-        retry_sql = client.generate_sql(question, error_context=result.error or "")
-        result = run_query(retry_sql)
+        if not result.ok:
+            retry_sql = client.generate_sql(question, error_context=result.error or "")
+            result = run_query(retry_sql)
+    except Exception as exc:
+        duration_ms = (time.perf_counter() - start) * 1000
+        message = str(exc) or "Erro inesperado ao consultar o modelo."
+        logger.warning("llm pipeline failed: %s", exc)
+        log_interaction(
+            question=question,
+            sql="",
+            status="llm_error",
+            rows=0,
+            error=message,
+            duration_ms=duration_ms,
+        )
+        return {
+            "question": question,
+            "sql": "",
+            "ok": False,
+            "error": message,
+            "dataframe": None,
+            "insights": "",
+            "duration_ms": duration_ms,
+            "llm_error": True,
+        }
 
     duration_ms = (time.perf_counter() - start) * 1000
 
@@ -191,6 +214,15 @@ def _render_result(payload: dict, key_prefix: str = "latest") -> None:
                 "2) validação sintática do SQL gerado pelo LLM, "
                 "3) sandbox de execução apenas-leitura no SQLite."
             )
+        return
+
+    if payload.get("llm_error"):
+        st.warning(f"⏳ {payload['error']}")
+        st.caption(
+            "Esse erro costuma ocorrer quando a API do provedor LLM está "
+            "temporariamente sobrecarregada. O sistema já tentou 3 vezes com backoff. "
+            "Aguarde alguns segundos e envie a pergunta de novo."
+        )
         return
 
     st.markdown("#### 🧾 SQL gerada")

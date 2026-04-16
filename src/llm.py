@@ -102,15 +102,43 @@ class AnthropicClient:
         self.model = model
 
     def _chat(self, system: str, user: str) -> str:
-        msg = self.client.messages.create(
-            model=self.model,
-            max_tokens=1024,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-            temperature=0.1,
-        )
-        parts = [block.text for block in msg.content if getattr(block, "type", "") == "text"]
-        return "".join(parts).strip()
+        import time
+        from anthropic import APIStatusError, APITimeoutError, RateLimitError
+        try:
+            from anthropic import OverloadedError
+        except ImportError:
+            OverloadedError = APIStatusError
+
+        last_exc: Exception | None = None
+        for attempt, delay in enumerate([0, 1.5, 4.0]):
+            if delay:
+                time.sleep(delay)
+            try:
+                msg = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=1024,
+                    system=system,
+                    messages=[{"role": "user", "content": user}],
+                    temperature=0.1,
+                )
+                parts = [
+                    block.text for block in msg.content
+                    if getattr(block, "type", "") == "text"
+                ]
+                return "".join(parts).strip()
+            except (OverloadedError, RateLimitError, APITimeoutError) as exc:
+                last_exc = exc
+                continue
+            except APIStatusError as exc:
+                if getattr(exc, "status_code", None) in (429, 502, 503, 529):
+                    last_exc = exc
+                    continue
+                raise
+
+        raise RuntimeError(
+            "A API da Anthropic está temporariamente sobrecarregada. "
+            "Tente novamente em alguns instantes."
+        ) from last_exc
 
     def generate_sql(self, question: str, error_context: str | None = None) -> str:
         user = f"Pergunta: {question}"
