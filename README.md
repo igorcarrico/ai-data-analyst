@@ -1,14 +1,30 @@
 # 📊 AI Data Analyst
 
+> **🌐 Demo ao vivo:** [ai-data-analyst-3rda.onrender.com](https://ai-data-analyst-3rda.onrender.com)
+> *(Hospedado no plano free do Render — a primeira visita após inatividade leva ~30s para acordar.)*
+
+![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
+![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?logo=streamlit&logoColor=white)
+![Anthropic](https://img.shields.io/badge/Claude-Haiku_4.5-191919?logo=anthropic&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-003B57?logo=sqlite&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green.svg)
+
 Aplicação web que transforma **perguntas em linguagem natural** em consultas SQL executadas sobre um banco local de vendas, apresentando **tabela**, **gráfico automático** e **insights** gerados por LLM.
 
 Projeto desenhado como peça de portfólio para vagas de **IA aplicada, Data Engineering e AI Engineering**, com foco em:
 
-- Geração de SQL via LLM (OpenAI ou Anthropic, configurável)
-- **Validação de segurança** antes de qualquer execução no banco
+- Geração de SQL via LLM (Claude / GPT, configurável)
+- **Defesa em profundidade:** 3 camadas de validação antes de qualquer execução
 - Explicabilidade (SQL sempre visível ao usuário)
-- Correção automática de erros em 1 retry
-- Arquitetura modular e fácil de estender (SQLite → PostgreSQL)
+- Tratamento de erros transientes com retry + backoff
+- Arquitetura modular e pronta para troca de backend (SQLite → PostgreSQL)
+
+## 🎯 Como testar em 30 segundos
+
+1. Abra o [demo ao vivo](https://ai-data-analyst-3rda.onrender.com)
+2. Clique em um dos exemplos na barra lateral (ex.: *"Qual o total de vendas por região?"*)
+3. Veja: SQL gerada → tabela → gráfico → insights
+4. Teste a segurança: pergunte *"Apague todas as vendas"* → bloqueado pela camada de intenção 🛡️
 
 ---
 
