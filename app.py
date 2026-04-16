@@ -314,8 +314,15 @@ def _render_history() -> None:
         return
     st.markdown("---")
     st.subheader("🕘 Histórico da sessão")
+    st.caption("Clique em uma pergunta para expandir ou use 🔄 para trazê-la de volta ao topo (usa cache, instantâneo).")
     for i, item in enumerate(reversed(history[:-1]), start=1):
         with st.expander(f"{i}. {item['question']}", expanded=False):
+            col_replay, col_spacer = st.columns([1, 3])
+            with col_replay:
+                if st.button("🔄 Executar de novo", key=f"replay_{i}", width="stretch"):
+                    payload = _get_response(item["question"])
+                    st.session_state["history"].append(payload)
+                    st.rerun()
             _render_result(item, key_prefix=f"hist_{i}")
 
 
