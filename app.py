@@ -195,6 +195,14 @@ def _render_sidebar(inserted_rows: int) -> None:
             st.info(f"Banco populado com {inserted_rows} linhas fictícias.")
 
         st.markdown("---")
+        st.subheader("⚖️ Modo comparação")
+        st.checkbox(
+            "Comparar duas perguntas",
+            key="comparison_mode",
+            help="Quando ativo, o formulário aceita 2 perguntas e mostra os resultados lado a lado.",
+        )
+
+        st.markdown("---")
         st.subheader("🧱 Schema")
         st.code(SCHEMA_DESCRIPTION, language="text")
 
@@ -204,14 +212,6 @@ def _render_sidebar(inserted_rows: int) -> None:
             if st.button(example, key=f"ex_{example}", width="stretch"):
                 st.session_state["pending_question"] = example
                 st.rerun()
-
-        st.markdown("---")
-        st.subheader("⚖️ Modo comparação")
-        st.checkbox(
-            "Comparar duas perguntas",
-            key="comparison_mode",
-            help="Quando ativo, o formulário aceita 2 perguntas e mostra os resultados lado a lado.",
-        )
 
         st.markdown("---")
         if st.button("🗑️ Limpar histórico", width="stretch"):
