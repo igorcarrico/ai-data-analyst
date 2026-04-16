@@ -19,6 +19,16 @@ Projeto desenhado como peça de portfólio para vagas de **IA aplicada, Data Eng
 - Tratamento de erros transientes com retry + backoff
 - Arquitetura modular e pronta para troca de backend (SQLite → PostgreSQL)
 
+## 🖼️ Preview
+
+**Da pergunta ao gráfico**, em uma tela: SQL gerada fica sempre visível para revisão antes da execução.
+
+![Query e visualização](docs/interface_1.PNG)
+
+**Insights narrativos** gerados pelo LLM a partir do resultado, com estatísticas de apoio calculadas localmente:
+
+![Insights gerados pelo LLM](docs/interface_2.PNG)
+
 ## 🎯 Como testar em 30 segundos
 
 1. Abra o [demo ao vivo](https://ai-data-analyst-3rda.onrender.com)
