@@ -228,6 +228,19 @@ def _render_result(payload: dict, key_prefix: str = "latest") -> None:
     st.markdown("#### 🧾 SQL gerada")
     st.code(payload["sql"], language="sql")
 
+    explain_key = f"explain_{key_prefix}"
+    if st.button("💬 Explicar essa query", key=f"btn_{explain_key}"):
+        if "explanation" not in payload:
+            try:
+                with st.spinner("Pedindo ao LLM para explicar a query..."):
+                    payload["explanation"] = _bootstrap()["client"].explain_sql(payload["sql"])
+            except Exception as exc:
+                payload["explanation"] = f"_Não foi possível gerar a explicação: {exc}_"
+        st.session_state[explain_key] = True
+
+    if st.session_state.get(explain_key) and payload.get("explanation"):
+        st.info(payload["explanation"])
+
     if not payload["ok"]:
         st.error(f"Falha ao executar a consulta: {payload['error']}")
         return
@@ -241,9 +254,25 @@ def _render_result(payload: dict, key_prefix: str = "latest") -> None:
     with col_left:
         st.markdown("#### 📋 Resultado")
         st.dataframe(df, width="stretch", hide_index=True)
-        st.caption(
-            f"{len(df)} linhas · {payload['duration_ms']:.0f} ms"
-            + (" · cache" if payload.get("cached") else "")
+
+        meta_parts = [f"{len(df)} linhas", f"{payload['duration_ms']:.0f} ms"]
+        meta_line = " · ".join(meta_parts)
+        if payload.get("cached"):
+            st.markdown(
+                f"<span style='background:#FFF3CD;color:#664D03;padding:2px 8px;"
+                f"border-radius:10px;font-size:0.78rem;font-weight:600;'>⚡ cache hit</span> "
+                f"<span style='color:#666;font-size:0.8rem;'>{meta_line}</span>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.caption(meta_line)
+
+        st.download_button(
+            label="📥 Baixar CSV",
+            data=df.to_csv(index=False).encode("utf-8"),
+            file_name=f"resultado_{key_prefix}.csv",
+            mime="text/csv",
+            key=f"dl_{key_prefix}",
         )
     with col_right:
         fig = build_chart(df)

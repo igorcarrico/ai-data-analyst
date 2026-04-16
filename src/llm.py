@@ -50,10 +50,24 @@ Regras de resposta:
 - Use R$ ao formatar valores em reais. Evite markdown LaTeX.
 """
 
+EXPLAIN_SYSTEM_PROMPT = """Você é um professor de SQL paciente.
+Receberá uma query SQL e deve explicá-la em linguagem natural, para uma pessoa de negócio.
+
+Regras:
+- Responda em português, exceto se a query usar termos visivelmente em inglês.
+- Use 2 a 4 frases curtas, sem jargão técnico desnecessário.
+- Explique o QUE a query faz, não COMO o SQL funciona internamente.
+- Se houver agregações (SUM, AVG, COUNT), traduza para "soma", "média", "contagem".
+- Se houver GROUP BY, diga "agrupado por X".
+- Se houver ORDER BY ... DESC LIMIT N, diga "os N maiores".
+- Não inclua a query no output. Não use markdown nem code fences.
+"""
+
 
 class LLMClient(Protocol):
     def generate_sql(self, question: str, error_context: str | None = None) -> str: ...
     def generate_insights(self, question: str, sql: str, sample_markdown: str) -> str: ...
+    def explain_sql(self, sql: str) -> str: ...
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +107,9 @@ class OpenAIClient:
             f"Resultado (primeiras linhas):\n{sample_markdown}"
         )
         return self._chat(INSIGHT_SYSTEM_PROMPT, user)
+
+    def explain_sql(self, sql: str) -> str:
+        return self._chat(EXPLAIN_SYSTEM_PROMPT, f"Query SQL:\n{sql}")
 
 
 class AnthropicClient:
@@ -157,6 +174,9 @@ class AnthropicClient:
         )
         return self._chat(INSIGHT_SYSTEM_PROMPT, user)
 
+    def explain_sql(self, sql: str) -> str:
+        return self._chat(EXPLAIN_SYSTEM_PROMPT, f"Query SQL:\n{sql}")
+
 
 class HeuristicClient:
     """Offline fallback when no API key is available. Covers common demo questions."""
@@ -195,6 +215,12 @@ class HeuristicClient:
             "- Modo offline: nenhuma chave de API configurada.\n"
             "- Os dados acima representam a resposta direta da query.\n"
             "- Configure OPENAI_API_KEY ou ANTHROPIC_API_KEY no `.env` para insights automáticos."
+        )
+
+    def explain_sql(self, sql: str) -> str:
+        return (
+            "Modo offline: explicação não disponível sem LLM real. "
+            "Configure uma API key para ativar este recurso."
         )
 
 
