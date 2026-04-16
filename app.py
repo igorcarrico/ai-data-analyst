@@ -206,9 +206,18 @@ def _render_sidebar(inserted_rows: int) -> None:
                 st.rerun()
 
         st.markdown("---")
+        st.subheader("⚖️ Modo comparação")
+        st.checkbox(
+            "Comparar duas perguntas",
+            key="comparison_mode",
+            help="Quando ativo, o formulário aceita 2 perguntas e mostra os resultados lado a lado.",
+        )
+
+        st.markdown("---")
         if st.button("🗑️ Limpar histórico", width="stretch"):
             st.session_state["history"] = []
             st.session_state["response_cache"] = {}
+            st.session_state.pop("comparison_payloads", None)
             st.rerun()
 
 
@@ -308,6 +317,74 @@ def _render_result(payload: dict, key_prefix: str = "latest") -> None:
         st.markdown(payload["insights"].replace("$", "\\$"))
 
 
+def _render_comparison_panel(payload: dict, key_prefix: str) -> None:
+    """Compact vertical render used inside the side-by-side comparison view."""
+    if payload.get("blocked"):
+        st.warning(f"🛡️ {payload['error']}")
+        return
+    if payload.get("llm_error"):
+        st.warning(f"⏳ {payload['error']}")
+        return
+
+    with st.expander("🧾 SQL gerada", expanded=False):
+        st.code(payload["sql"], language="sql")
+
+    if not payload["ok"]:
+        st.error(f"Falha: {payload['error']}")
+        return
+
+    df: pd.DataFrame | None = payload["dataframe"]
+    if df is None or df.empty:
+        st.info("A consulta não retornou linhas.")
+        return
+
+    fig = build_chart(df)
+    if fig is not None:
+        st.plotly_chart(fig, width="stretch", key=f"chart_{key_prefix}")
+
+    st.dataframe(df, width="stretch", hide_index=True, height=220)
+
+    meta_line = f"{len(df)} linhas · {payload['duration_ms']:.0f} ms"
+    if payload.get("cached"):
+        meta_line += " · ⚡ cache hit"
+    st.caption(meta_line)
+
+    dl_csv, dl_xlsx = st.columns(2)
+    with dl_csv:
+        st.download_button(
+            label="📥 CSV",
+            data=df.to_csv(index=False).encode("utf-8"),
+            file_name=f"resultado_{key_prefix}.csv",
+            mime="text/csv",
+            key=f"dl_csv_{key_prefix}",
+            width="stretch",
+        )
+    with dl_xlsx:
+        st.download_button(
+            label="📊 XLSX",
+            data=_dataframe_to_xlsx(df),
+            file_name=f"resultado_{key_prefix}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"dl_xlsx_{key_prefix}",
+            width="stretch",
+        )
+
+    if payload["insights"]:
+        with st.expander("💡 Insights", expanded=True):
+            st.markdown(payload["insights"].replace("$", "\\$"))
+
+
+def _render_comparison(payload_a: dict, payload_b: dict) -> None:
+    st.markdown("### ⚖️ Comparação lado a lado")
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown(f"**🅰️ {payload_a['question']}**")
+        _render_comparison_panel(payload_a, "cmp_a")
+    with col_b:
+        st.markdown(f"**🅱️ {payload_b['question']}**")
+        _render_comparison_panel(payload_b, "cmp_b")
+
+
 def _render_history() -> None:
     history = st.session_state["history"]
     if len(history) <= 1:
@@ -343,6 +420,15 @@ def main() -> None:
 
     _render_sidebar(boot["inserted"])
 
+    if st.session_state.get("comparison_mode"):
+        _render_comparison_flow()
+    else:
+        _render_single_flow()
+
+    _render_history()
+
+
+def _render_single_flow() -> None:
     pending = st.session_state.get("pending_question", "")
     with st.form("question_form", clear_on_submit=False):
         question = st.text_input(
@@ -366,7 +452,40 @@ def main() -> None:
             f"Os dados estão na tabela `{TABLE_NAME}`."
         )
 
-    _render_history()
+
+def _render_comparison_flow() -> None:
+    st.caption("⚖️ Modo comparação ativo — digite duas perguntas para analisar lado a lado.")
+    with st.form("comparison_form", clear_on_submit=False):
+        col_a, col_b = st.columns(2)
+        with col_a:
+            question_a = st.text_input(
+                "🅰️ Pergunta A",
+                placeholder="Ex.: Qual o total de vendas por região?",
+                key="comparison_q_a",
+            )
+        with col_b:
+            question_b = st.text_input(
+                "🅱️ Pergunta B",
+                placeholder="Ex.: Qual o total de vendas por canal?",
+                key="comparison_q_b",
+            )
+        submitted = st.form_submit_button("Comparar", type="primary", width="stretch")
+
+    if submitted and question_a.strip() and question_b.strip():
+        with st.spinner("Executando as duas perguntas..."):
+            payload_a = _get_response(question_a.strip())
+            payload_b = _get_response(question_b.strip())
+        st.session_state["history"].append(payload_a)
+        st.session_state["history"].append(payload_b)
+        st.session_state["comparison_payloads"] = (payload_a, payload_b)
+        _render_comparison(payload_a, payload_b)
+    elif st.session_state.get("comparison_payloads"):
+        _render_comparison(*st.session_state["comparison_payloads"])
+    else:
+        st.info(
+            "Digite duas perguntas acima para comparar os resultados lado a lado. "
+            "Ótimo para contrastar dimensões (ex.: vendas por região × vendas por canal)."
+        )
 
 
 if __name__ == "__main__":
