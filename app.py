@@ -4,6 +4,7 @@ Orchestrates: NL question -> LLM SQL -> validator -> executor -> table + chart +
 """
 from __future__ import annotations
 
+import re
 import time
 from datetime import datetime
 from hashlib import sha1
@@ -24,7 +25,6 @@ from src.sql_validator import detect_destructive_intent, validate_sql
 
 PAGE_TITLE = "AI Data Analyst"
 PAGE_ICON = "📊"
-UPLOAD_TABLE_NAME = "dados_usuario"
 
 EXAMPLE_QUESTIONS = [
     "Qual o total de vendas por região?",
@@ -59,7 +59,10 @@ def _init_session_state() -> None:
 
 def _cache_key(question: str) -> str:
     ctx = st.session_state.get("upload_context")
-    prefix = ctx["table_name"] if ctx else TABLE_NAME
+    if ctx:
+        prefix = "|".join(sorted(ctx["allowed_tables"]))
+    else:
+        prefix = TABLE_NAME
     raw = f"{prefix}:{question.strip().lower()}"
     return sha1(raw.encode("utf-8")).hexdigest()
 
@@ -88,6 +91,13 @@ def _build_schema_from_df(df: pd.DataFrame, table_name: str) -> str:
         examples = ", ".join(str(v) for v in sample)
         lines.append(f"- {col} ({sql_type}): ex.: {examples}")
     return "\n".join(lines)
+
+
+def _sanitize_table_name(filename: str) -> str:
+    stem = filename.rsplit(".", 1)[0]
+    name = re.sub(r"[^a-zA-Z0-9_]", "_", stem)
+    name = re.sub(r"_+", "_", name).strip("_")
+    return name.lower() or "tabela"
 
 
 def _build_pdf_report(payload: dict) -> bytes:
@@ -233,7 +243,7 @@ def _run_pipeline(question: str) -> dict:
 
     upload_ctx = st.session_state.get("upload_context")
     schema = upload_ctx["schema"] if upload_ctx else None
-    tbl_name = upload_ctx["table_name"] if upload_ctx else None
+    tbl_name = next(iter(upload_ctx["allowed_tables"])) if upload_ctx else None
     allowed = upload_ctx["allowed_tables"] if upload_ctx else None
 
     destructive_hit = detect_destructive_intent(question)
@@ -353,49 +363,72 @@ def _get_response(question: str) -> dict:
 # UI helpers
 # ---------------------------------------------------------------------------
 
-def _handle_file_upload() -> None:
-    """Process file upload widget and manage upload context in session state."""
-    uploaded = st.file_uploader(
+def _handle_file_uploads() -> None:
+    """Process multi-file upload. Each file becomes a separate SQLite table."""
+    uploaded_files = st.file_uploader(
         "Enviar CSV ou XLSX",
         type=["csv", "xlsx", "xls"],
+        accept_multiple_files=True,
         key="data_uploader",
-        help="Arraste um arquivo para analisar seus próprios dados com linguagem natural.",
+        help="Arraste um ou mais arquivos. Cada arquivo vira uma tabela; "
+        "múltiplas tabelas podem ser cruzadas via JOIN.",
     )
 
-    if uploaded is not None:
-        file_bytes = uploaded.getvalue()
-        file_hash = sha1(file_bytes).hexdigest()
-        ctx = st.session_state.get("upload_context")
+    if uploaded_files:
+        combined_hash = sha1(
+            b"".join(f.getvalue() for f in uploaded_files)
+        ).hexdigest()
 
-        if not ctx or ctx.get("file_hash") != file_hash:
-            uploaded.seek(0)
-            if uploaded.name.lower().endswith(".csv"):
-                df = pd.read_csv(uploaded)
+        ctx = st.session_state.get("upload_context")
+        if ctx and ctx.get("files_hash") == combined_hash:
+            _show_upload_info(ctx)
+            return
+
+        tables: dict[str, dict] = {}
+        schemas: list[str] = []
+        allowed: set[str] = set()
+
+        for f in uploaded_files:
+            f.seek(0)
+            table_name = _sanitize_table_name(f.name)
+            base = table_name
+            counter = 2
+            while table_name in tables:
+                table_name = f"{base}_{counter}"
+                counter += 1
+
+            if f.name.lower().endswith(".csv"):
+                df = pd.read_csv(f)
             else:
-                df = pd.read_excel(uploaded)
-            load_dataframe(df, UPLOAD_TABLE_NAME)
-            schema_desc = _build_schema_from_df(df, UPLOAD_TABLE_NAME)
-            st.session_state["upload_context"] = {
-                "table_name": UPLOAD_TABLE_NAME,
-                "schema": schema_desc,
-                "allowed_tables": {UPLOAD_TABLE_NAME},
-                "filename": uploaded.name,
-                "file_hash": file_hash,
-                "row_count": len(df),
-            }
-            st.session_state["response_cache"] = {}
-            st.session_state["history"] = []
-            st.session_state.pop("comparison_payloads", None)
+                df = pd.read_excel(f)
 
-        ctx = st.session_state.get("upload_context")
-        if ctx:
-            st.success(f"**{ctx['filename']}** ({ctx['row_count']} linhas carregadas)")
+            load_dataframe(df, table_name)
+            schemas.append(_build_schema_from_df(df, table_name))
+            tables[table_name] = {"filename": f.name, "row_count": len(df)}
+            allowed.add(table_name)
+
+        st.session_state["upload_context"] = {
+            "tables": tables,
+            "schema": "\n\n".join(schemas),
+            "allowed_tables": allowed,
+            "files_hash": combined_hash,
+        }
+        st.session_state["response_cache"] = {}
+        st.session_state["history"] = []
+        st.session_state.pop("comparison_payloads", None)
+
+        _show_upload_info(st.session_state["upload_context"])
 
     elif st.session_state.get("upload_context"):
         st.session_state.pop("upload_context", None)
         st.session_state["response_cache"] = {}
         st.session_state["history"] = []
         st.session_state.pop("comparison_payloads", None)
+
+
+def _show_upload_info(ctx: dict) -> None:
+    for tbl_name, info in ctx["tables"].items():
+        st.success(f"**{info['filename']}** → `{tbl_name}` ({info['row_count']} linhas)")
 
 
 def _render_sidebar(inserted_rows: int) -> None:
@@ -415,7 +448,7 @@ def _render_sidebar(inserted_rows: int) -> None:
 
         st.markdown("---")
         st.subheader("📁 Seus dados")
-        _handle_file_upload()
+        _handle_file_uploads()
 
         st.markdown("---")
         st.subheader("⚖️ Modo comparação")
@@ -644,10 +677,19 @@ def main() -> None:
     st.title(f"{PAGE_ICON} {PAGE_TITLE}")
     upload_ctx = st.session_state.get("upload_context")
     if upload_ctx:
-        st.caption(
-            f"Analisando **{upload_ctx['filename']}** ({upload_ctx['row_count']} linhas). "
-            "Pergunte em linguagem natural sobre qualquer aspecto dos dados."
-        )
+        total_rows = sum(t["row_count"] for t in upload_ctx["tables"].values())
+        n_tables = len(upload_ctx["tables"])
+        files = ", ".join(t["filename"] for t in upload_ctx["tables"].values())
+        if n_tables == 1:
+            st.caption(
+                f"Analisando **{files}** ({total_rows} linhas). "
+                "Pergunte em linguagem natural sobre qualquer aspecto dos dados."
+            )
+        else:
+            st.caption(
+                f"Analisando **{n_tables} tabelas** ({total_rows} linhas): {files}. "
+                "Pergunte em linguagem natural — o sistema gera JOINs automaticamente quando necessário."
+            )
     else:
         st.caption(
             "Pergunte em linguagem natural sobre os dados de vendas. "

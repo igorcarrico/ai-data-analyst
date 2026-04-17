@@ -19,11 +19,13 @@ Sua única saída deve ser uma query SQL válida. Nunca escreva texto fora da qu
 
 Regras obrigatórias:
 - Retorne SOMENTE a query SQL, sem markdown, sem comentários, sem explicações.
-- Use APENAS a tabela `{table_name}` e apenas as colunas existentes no schema.
+- Use APENAS as tabelas e colunas listadas no schema abaixo.
 - Apenas SELECT. Nunca use DELETE, DROP, UPDATE, INSERT, ALTER, TRUNCATE, CREATE, REPLACE.
 - Prefira agregações claras (SUM, AVG, COUNT) e GROUP BY quando fizer sentido.
 - Use date(data) ou strftime('%Y-%m', data) para manipular datas no SQLite.
-- Nunca invente colunas. Se não souber responder, retorne uma SELECT simples sobre a tabela.
+- Nunca invente colunas. Se não souber responder, retorne uma SELECT simples sobre a primeira tabela.
+- Se houver múltiplas tabelas no schema, use JOIN para relacioná-las quando a pergunta exigir.
+  Infira a chave de junção pelos nomes, tipos e valores de exemplo das colunas.
 
 Regras de LIMIT:
 - Se o usuário pedir "o maior", "o primeiro", "o único", "top 1", use LIMIT 1.
