@@ -6,6 +6,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+import pandas as pd
+
 from .config import SETTINGS, TABLE_NAME, TABLE_SCHEMA
 
 
@@ -36,3 +38,9 @@ def table_is_empty(db_path: Path | None = None) -> bool:
     with get_connection(db_path) as conn:
         cur = conn.execute(f"SELECT COUNT(*) FROM {TABLE_NAME}")
         return cur.fetchone()[0] == 0
+
+
+def load_dataframe(df: pd.DataFrame, table_name: str, db_path: Path | None = None) -> None:
+    """Load a DataFrame into SQLite, replacing any existing table with that name."""
+    with get_connection(db_path) as conn:
+        df.to_sql(table_name, conn, if_exists="replace", index=False)

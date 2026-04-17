@@ -14,6 +14,7 @@ import streamlit as st
 
 from src.charts import build_chart
 from src.config import SCHEMA_DESCRIPTION, SETTINGS, TABLE_NAME
+from src.database import load_dataframe
 from src.insights import generate_insights
 from src.llm import build_client
 from src.logger import log_interaction, logger
@@ -23,6 +24,7 @@ from src.sql_validator import detect_destructive_intent, validate_sql
 
 PAGE_TITLE = "AI Data Analyst"
 PAGE_ICON = "📊"
+UPLOAD_TABLE_NAME = "dados_usuario"
 
 EXAMPLE_QUESTIONS = [
     "Qual o total de vendas por região?",
@@ -56,7 +58,10 @@ def _init_session_state() -> None:
 # ---------------------------------------------------------------------------
 
 def _cache_key(question: str) -> str:
-    return sha1(question.strip().lower().encode("utf-8")).hexdigest()
+    ctx = st.session_state.get("upload_context")
+    prefix = ctx["table_name"] if ctx else TABLE_NAME
+    raw = f"{prefix}:{question.strip().lower()}"
+    return sha1(raw.encode("utf-8")).hexdigest()
 
 
 def _dataframe_to_xlsx(df: pd.DataFrame) -> bytes:
@@ -64,6 +69,25 @@ def _dataframe_to_xlsx(df: pd.DataFrame) -> bytes:
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Resultado")
     return buffer.getvalue()
+
+
+def _build_schema_from_df(df: pd.DataFrame, table_name: str) -> str:
+    """Auto-discover schema from a DataFrame for the LLM prompt."""
+    lines = [f"Tabela: {table_name}", "Colunas:"]
+    for col in df.columns:
+        dtype = df[col].dtype
+        if pd.api.types.is_integer_dtype(dtype):
+            sql_type = "INTEGER"
+        elif pd.api.types.is_float_dtype(dtype):
+            sql_type = "REAL"
+        elif pd.api.types.is_datetime64_any_dtype(dtype):
+            sql_type = "DATE"
+        else:
+            sql_type = "TEXT"
+        sample = df[col].dropna().unique()[:5]
+        examples = ", ".join(str(v) for v in sample)
+        lines.append(f"- {col} ({sql_type}): ex.: {examples}")
+    return "\n".join(lines)
 
 
 def _build_pdf_report(payload: dict) -> bytes:
@@ -207,13 +231,18 @@ def _run_pipeline(question: str) -> dict:
     client = _bootstrap()["client"]
     start = time.perf_counter()
 
+    upload_ctx = st.session_state.get("upload_context")
+    schema = upload_ctx["schema"] if upload_ctx else None
+    tbl_name = upload_ctx["table_name"] if upload_ctx else None
+    allowed = upload_ctx["allowed_tables"] if upload_ctx else None
+
     destructive_hit = detect_destructive_intent(question)
     if destructive_hit:
         duration_ms = (time.perf_counter() - start) * 1000
         message = (
             "Pergunta bloqueada pela camada de segurança: a solicitação contém "
             "termos associados a operações destrutivas (ex.: apagar, atualizar, remover). "
-            "Este sistema aceita apenas consultas de leitura sobre a tabela `vendas`."
+            "Este sistema aceita apenas consultas de leitura."
         )
         log_interaction(
             question=question,
@@ -235,18 +264,24 @@ def _run_pipeline(question: str) -> dict:
         }
 
     try:
-        raw_sql = client.generate_sql(question)
-        validation = validate_sql(raw_sql)
+        raw_sql = client.generate_sql(question, schema=schema, table_name=tbl_name)
+        validation = validate_sql(raw_sql, allowed_tables=allowed)
 
         if not validation.is_valid:
-            retry_sql = client.generate_sql(question, error_context=validation.error or "")
-            validation = validate_sql(retry_sql)
+            retry_sql = client.generate_sql(
+                question, error_context=validation.error or "",
+                schema=schema, table_name=tbl_name,
+            )
+            validation = validate_sql(retry_sql, allowed_tables=allowed)
             raw_sql = retry_sql
 
         result: QueryResult = run_query(raw_sql)
 
         if not result.ok:
-            retry_sql = client.generate_sql(question, error_context=result.error or "")
+            retry_sql = client.generate_sql(
+                question, error_context=result.error or "",
+                schema=schema, table_name=tbl_name,
+            )
             result = run_query(retry_sql)
     except Exception as exc:
         duration_ms = (time.perf_counter() - start) * 1000
@@ -318,6 +353,51 @@ def _get_response(question: str) -> dict:
 # UI helpers
 # ---------------------------------------------------------------------------
 
+def _handle_file_upload() -> None:
+    """Process file upload widget and manage upload context in session state."""
+    uploaded = st.file_uploader(
+        "Enviar CSV ou XLSX",
+        type=["csv", "xlsx", "xls"],
+        key="data_uploader",
+        help="Arraste um arquivo para analisar seus próprios dados com linguagem natural.",
+    )
+
+    if uploaded is not None:
+        file_bytes = uploaded.getvalue()
+        file_hash = sha1(file_bytes).hexdigest()
+        ctx = st.session_state.get("upload_context")
+
+        if not ctx or ctx.get("file_hash") != file_hash:
+            uploaded.seek(0)
+            if uploaded.name.lower().endswith(".csv"):
+                df = pd.read_csv(uploaded)
+            else:
+                df = pd.read_excel(uploaded)
+            load_dataframe(df, UPLOAD_TABLE_NAME)
+            schema_desc = _build_schema_from_df(df, UPLOAD_TABLE_NAME)
+            st.session_state["upload_context"] = {
+                "table_name": UPLOAD_TABLE_NAME,
+                "schema": schema_desc,
+                "allowed_tables": {UPLOAD_TABLE_NAME},
+                "filename": uploaded.name,
+                "file_hash": file_hash,
+                "row_count": len(df),
+            }
+            st.session_state["response_cache"] = {}
+            st.session_state["history"] = []
+            st.session_state.pop("comparison_payloads", None)
+
+        ctx = st.session_state.get("upload_context")
+        if ctx:
+            st.success(f"**{ctx['filename']}** ({ctx['row_count']} linhas carregadas)")
+
+    elif st.session_state.get("upload_context"):
+        st.session_state.pop("upload_context", None)
+        st.session_state["response_cache"] = {}
+        st.session_state["history"] = []
+        st.session_state.pop("comparison_payloads", None)
+
+
 def _render_sidebar(inserted_rows: int) -> None:
     with st.sidebar:
         st.subheader("⚙️ Configuração")
@@ -328,8 +408,14 @@ def _render_sidebar(inserted_rows: int) -> None:
         else:
             st.warning("Sem API key — rodando em modo heurístico offline.")
 
-        if inserted_rows > 0:
+        upload_ctx = st.session_state.get("upload_context")
+
+        if not upload_ctx and inserted_rows > 0:
             st.info(f"Banco populado com {inserted_rows} linhas fictícias.")
+
+        st.markdown("---")
+        st.subheader("📁 Seus dados")
+        _handle_file_upload()
 
         st.markdown("---")
         st.subheader("⚖️ Modo comparação")
@@ -341,14 +427,16 @@ def _render_sidebar(inserted_rows: int) -> None:
 
         st.markdown("---")
         st.subheader("🧱 Schema")
-        st.code(SCHEMA_DESCRIPTION, language="text")
+        active_schema = upload_ctx["schema"] if upload_ctx else SCHEMA_DESCRIPTION
+        st.code(active_schema, language="text")
 
-        st.markdown("---")
-        st.subheader("🧪 Exemplos")
-        for example in EXAMPLE_QUESTIONS:
-            if st.button(example, key=f"ex_{example}", width="stretch"):
-                st.session_state["pending_question"] = example
-                st.rerun()
+        if not upload_ctx:
+            st.markdown("---")
+            st.subheader("🧪 Exemplos")
+            for example in EXAMPLE_QUESTIONS:
+                if st.button(example, key=f"ex_{example}", width="stretch"):
+                    st.session_state["pending_question"] = example
+                    st.rerun()
 
         st.markdown("---")
         if st.button("🗑️ Limpar histórico", width="stretch"):
@@ -554,10 +642,17 @@ def main() -> None:
     boot = _bootstrap()
 
     st.title(f"{PAGE_ICON} {PAGE_TITLE}")
-    st.caption(
-        "Pergunte em linguagem natural sobre os dados de vendas. "
-        "O sistema gera SQL, valida segurança, executa e resume os insights."
-    )
+    upload_ctx = st.session_state.get("upload_context")
+    if upload_ctx:
+        st.caption(
+            f"Analisando **{upload_ctx['filename']}** ({upload_ctx['row_count']} linhas). "
+            "Pergunte em linguagem natural sobre qualquer aspecto dos dados."
+        )
+    else:
+        st.caption(
+            "Pergunte em linguagem natural sobre os dados de vendas. "
+            "O sistema gera SQL, valida segurança, executa e resume os insights."
+        )
 
     _render_sidebar(boot["inserted"])
 
@@ -588,10 +683,14 @@ def _render_single_flow() -> None:
     elif st.session_state["history"]:
         _render_result(st.session_state["history"][-1])
     else:
-        st.info(
-            "Digite uma pergunta acima ou escolha um exemplo na barra lateral. "
-            f"Os dados estão na tabela `{TABLE_NAME}`."
-        )
+        ctx = st.session_state.get("upload_context")
+        if ctx:
+            st.info("Digite uma pergunta sobre seus dados carregados.")
+        else:
+            st.info(
+                "Digite uma pergunta acima ou escolha um exemplo na barra lateral. "
+                f"Os dados estão na tabela `{TABLE_NAME}`."
+            )
 
 
 def _render_comparison_flow() -> None:

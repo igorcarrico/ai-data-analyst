@@ -11,12 +11,15 @@ from typing import Protocol
 
 from .config import SETTINGS, SCHEMA_DESCRIPTION, TABLE_NAME
 
-SQL_SYSTEM_PROMPT = f"""Você é um gerador de SQL para SQLite.
+def _build_sql_system_prompt(
+    schema: str = SCHEMA_DESCRIPTION, table_name: str = TABLE_NAME,
+) -> str:
+    return f"""Você é um gerador de SQL para SQLite.
 Sua única saída deve ser uma query SQL válida. Nunca escreva texto fora da query.
 
 Regras obrigatórias:
 - Retorne SOMENTE a query SQL, sem markdown, sem comentários, sem explicações.
-- Use APENAS a tabela `{TABLE_NAME}` e apenas as colunas existentes no schema.
+- Use APENAS a tabela `{table_name}` e apenas as colunas existentes no schema.
 - Apenas SELECT. Nunca use DELETE, DROP, UPDATE, INSERT, ALTER, TRUNCATE, CREATE, REPLACE.
 - Prefira agregações claras (SUM, AVG, COUNT) e GROUP BY quando fizer sentido.
 - Use date(data) ou strftime('%Y-%m', data) para manipular datas no SQLite.
@@ -34,8 +37,10 @@ Regras de ambiguidade:
   (geralmente produto) e inclua os top 5. A interpretação será sinalizada na camada de insights.
 
 Schema disponível:
-{SCHEMA_DESCRIPTION}
+{schema}
 """
+
+SQL_SYSTEM_PROMPT = _build_sql_system_prompt()
 
 INSIGHT_SYSTEM_PROMPT = """Você é um analista de dados sênior.
 Receberá a pergunta do usuário, a query SQL executada e o resultado.
@@ -65,7 +70,13 @@ Regras:
 
 
 class LLMClient(Protocol):
-    def generate_sql(self, question: str, error_context: str | None = None) -> str: ...
+    def generate_sql(
+        self,
+        question: str,
+        error_context: str | None = None,
+        schema: str | None = None,
+        table_name: str | None = None,
+    ) -> str: ...
     def generate_insights(self, question: str, sql: str, sample_markdown: str) -> str: ...
     def explain_sql(self, sql: str) -> str: ...
 
@@ -91,14 +102,21 @@ class OpenAIClient:
         )
         return (resp.choices[0].message.content or "").strip()
 
-    def generate_sql(self, question: str, error_context: str | None = None) -> str:
+    def generate_sql(
+        self,
+        question: str,
+        error_context: str | None = None,
+        schema: str | None = None,
+        table_name: str | None = None,
+    ) -> str:
+        sys_prompt = _build_sql_system_prompt(schema, table_name) if schema else SQL_SYSTEM_PROMPT
         user = f"Pergunta: {question}"
         if error_context:
             user += (
                 f"\n\nA query anterior falhou com o erro:\n{error_context}\n"
                 "Gere uma nova query SQL corrigida, seguindo todas as regras."
             )
-        return _strip_sql(self._chat(SQL_SYSTEM_PROMPT, user))
+        return _strip_sql(self._chat(sys_prompt, user))
 
     def generate_insights(self, question: str, sql: str, sample_markdown: str) -> str:
         user = (
@@ -157,14 +175,21 @@ class AnthropicClient:
             "Tente novamente em alguns instantes."
         ) from last_exc
 
-    def generate_sql(self, question: str, error_context: str | None = None) -> str:
+    def generate_sql(
+        self,
+        question: str,
+        error_context: str | None = None,
+        schema: str | None = None,
+        table_name: str | None = None,
+    ) -> str:
+        sys_prompt = _build_sql_system_prompt(schema, table_name) if schema else SQL_SYSTEM_PROMPT
         user = f"Pergunta: {question}"
         if error_context:
             user += (
                 f"\n\nA query anterior falhou com o erro:\n{error_context}\n"
                 "Gere uma nova query SQL corrigida, seguindo todas as regras."
             )
-        return _strip_sql(self._chat(SQL_SYSTEM_PROMPT, user))
+        return _strip_sql(self._chat(sys_prompt, user))
 
     def generate_insights(self, question: str, sql: str, sample_markdown: str) -> str:
         user = (
@@ -181,34 +206,43 @@ class AnthropicClient:
 class HeuristicClient:
     """Offline fallback when no API key is available. Covers common demo questions."""
 
-    def generate_sql(self, question: str, error_context: str | None = None) -> str:
+    def generate_sql(
+        self,
+        question: str,
+        error_context: str | None = None,
+        schema: str | None = None,
+        table_name: str | None = None,
+    ) -> str:
+        tbl = table_name or TABLE_NAME
+        if tbl != TABLE_NAME:
+            return f"SELECT * FROM {tbl} LIMIT 20"
         q = question.lower()
         if "região" in q or "regiao" in q:
             return (
                 "SELECT regiao, SUM(valor) AS total_vendas, SUM(quantidade) AS total_qtd "
-                f"FROM {TABLE_NAME} GROUP BY regiao ORDER BY total_vendas DESC"
+                f"FROM {tbl} GROUP BY regiao ORDER BY total_vendas DESC"
             )
         if "categoria" in q:
             return (
                 "SELECT categoria, SUM(valor) AS total_vendas "
-                f"FROM {TABLE_NAME} GROUP BY categoria ORDER BY total_vendas DESC"
+                f"FROM {tbl} GROUP BY categoria ORDER BY total_vendas DESC"
             )
         if "mês" in q or "mes" in q or "mensal" in q or "evolução" in q or "evolucao" in q:
             return (
                 "SELECT strftime('%Y-%m', data) AS mes, SUM(valor) AS total_vendas "
-                f"FROM {TABLE_NAME} GROUP BY mes ORDER BY mes"
+                f"FROM {tbl} GROUP BY mes ORDER BY mes"
             )
         if "canal" in q:
             return (
                 "SELECT canal, SUM(valor) AS total_vendas "
-                f"FROM {TABLE_NAME} GROUP BY canal ORDER BY total_vendas DESC"
+                f"FROM {tbl} GROUP BY canal ORDER BY total_vendas DESC"
             )
         if "produto" in q or "top" in q or "mais vendidos" in q:
             return (
                 "SELECT produto, SUM(valor) AS total_vendas, SUM(quantidade) AS qtd "
-                f"FROM {TABLE_NAME} GROUP BY produto ORDER BY total_vendas DESC LIMIT 10"
+                f"FROM {tbl} GROUP BY produto ORDER BY total_vendas DESC LIMIT 10"
             )
-        return f"SELECT * FROM {TABLE_NAME} ORDER BY data DESC LIMIT 20"
+        return f"SELECT * FROM {tbl} ORDER BY data DESC LIMIT 20"
 
     def generate_insights(self, question: str, sql: str, sample_markdown: str) -> str:
         return (

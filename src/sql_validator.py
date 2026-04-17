@@ -86,16 +86,17 @@ def _is_select_statement(stmt: Statement) -> bool:
     return False
 
 
-def _only_allowed_table(sql_upper: str) -> bool:
-    """Extract table names after FROM/JOIN and confirm they match the allowed table."""
+def _only_allowed_table(sql_upper: str, allowed: set[str] | None = None) -> bool:
+    """Extract table names after FROM/JOIN and confirm they match the allowed set."""
+    allowed_lower = {t.lower() for t in (allowed or {TABLE_NAME})}
     pattern = re.compile(r"\b(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)", re.IGNORECASE)
     found = pattern.findall(sql_upper)
     if not found:
         return False
-    return all(name.lower() == TABLE_NAME.lower() for name in found)
+    return all(name.lower() in allowed_lower for name in found)
 
 
-def validate_sql(sql: str) -> ValidationResult:
+def validate_sql(sql: str, allowed_tables: set[str] | None = None) -> ValidationResult:
     if not sql or not sql.strip():
         return ValidationResult(False, "", "SQL vazio.")
 
@@ -124,9 +125,11 @@ def validate_sql(sql: str) -> ValidationResult:
     if not _is_select_statement(stmt):
         return ValidationResult(False, cleaned, "Apenas comandos SELECT são permitidos.")
 
-    if not _only_allowed_table(upper):
+    effective_tables = allowed_tables or {TABLE_NAME}
+    if not _only_allowed_table(upper, effective_tables):
+        names = ", ".join(f"`{t}`" for t in sorted(effective_tables))
         return ValidationResult(
-            False, cleaned, f"Apenas a tabela `{TABLE_NAME}` pode ser consultada."
+            False, cleaned, f"Apenas a(s) tabela(s) {names} pode(m) ser consultada(s)."
         )
 
     return ValidationResult(True, cleaned, None)
