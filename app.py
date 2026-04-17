@@ -285,14 +285,14 @@ def _run_pipeline(question: str) -> dict:
             validation = validate_sql(retry_sql, allowed_tables=allowed)
             raw_sql = retry_sql
 
-        result: QueryResult = run_query(raw_sql)
+        result: QueryResult = run_query(raw_sql, allowed_tables=allowed)
 
         if not result.ok:
             retry_sql = client.generate_sql(
                 question, error_context=result.error or "",
                 schema=schema, table_name=tbl_name,
             )
-            result = run_query(retry_sql)
+            result = run_query(retry_sql, allowed_tables=allowed)
     except Exception as exc:
         duration_ms = (time.perf_counter() - start) * 1000
         message = str(exc) or "Erro inesperado ao consultar o modelo."

@@ -21,8 +21,8 @@ class QueryResult:
         return self.dataframe is None or self.dataframe.empty
 
 
-def run_query(sql: str) -> QueryResult:
-    validation: ValidationResult = validate_sql(sql)
+def run_query(sql: str, allowed_tables: set[str] | None = None) -> QueryResult:
+    validation: ValidationResult = validate_sql(sql, allowed_tables=allowed_tables)
     if not validation.is_valid:
         return QueryResult(False, validation.cleaned_sql, None, validation.error)
 
