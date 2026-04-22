@@ -152,6 +152,78 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _build_chart_png(df: pd.DataFrame) -> bytes | None:
+    """Render a chart as PNG with matplotlib.
+
+    Uses the same heuristics as src.charts.build_chart (bar for categorical,
+    line for date-like), but doesn't depend on a headless browser, so it works
+    on any container — unlike kaleido, which needs Chromium.
+    """
+    if df is None or df.empty or len(df.columns) < 2 or len(df) > 500:
+        return None
+
+    numeric_col = next(
+        (c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])), None,
+    )
+    if numeric_col is None:
+        return None
+
+    non_numeric_cols = [
+        c for c in df.columns
+        if c != numeric_col and not pd.api.types.is_numeric_dtype(df[c])
+    ]
+    if not non_numeric_cols:
+        return None
+    cat_col = non_numeric_cols[0]
+
+    date_hints = ("data", "mes", "mês", "ano", "dia", "periodo", "período")
+    is_date = (
+        any(h in cat_col.lower() for h in date_hints)
+        or pd.api.types.is_datetime64_any_dtype(df[cat_col])
+    )
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(9, 5), dpi=120)
+    try:
+        if is_date:
+            df_sorted = df.sort_values(cat_col)
+            ax.plot(
+                df_sorted[cat_col].astype(str),
+                df_sorted[numeric_col],
+                marker="o",
+                color="#1f77b4",
+            )
+        else:
+            top = df.nlargest(min(20, len(df)), numeric_col)
+            bars = ax.bar(top[cat_col].astype(str), top[numeric_col], color="#1f77b4")
+            for bar, val in zip(bars, top[numeric_col]):
+                ax.annotate(
+                    f"{val:,.0f}".replace(",", "."),
+                    xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()),
+                    xytext=(0, 3),
+                    textcoords="offset points",
+                    ha="center",
+                    fontsize=8,
+                )
+
+        ax.set_xlabel(cat_col)
+        ax.set_ylabel(numeric_col)
+        ax.set_title(f"{numeric_col} por {cat_col}")
+        plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        fig.tight_layout()
+
+        buffer = BytesIO()
+        fig.savefig(buffer, format="png", dpi=120, bbox_inches="tight")
+        return buffer.getvalue()
+    finally:
+        plt.close(fig)
+
+
 def _build_pdf_report(payload: dict) -> bytes:
     """Assemble a PDF with question, SQL, chart image, table preview and insights."""
     from reportlab.lib import colors
@@ -210,9 +282,8 @@ def _build_pdf_report(payload: dict) -> bytes:
     df = payload.get("dataframe")
     if df is not None and not df.empty:
         try:
-            fig = build_chart(df)
-            if fig is not None:
-                img_bytes = fig.to_image(format="png", width=900, height=500, scale=2)
+            img_bytes = _build_chart_png(df)
+            if img_bytes:
                 story.append(Paragraph("Visualizacao", h2_style))
                 story.append(RLImage(BytesIO(img_bytes), width=16 * cm, height=9 * cm))
                 story.append(Spacer(1, 8))
