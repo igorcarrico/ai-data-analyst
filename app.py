@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 import time
+import unicodedata
 from datetime import datetime
 from hashlib import sha1
 from io import BytesIO
@@ -98,6 +99,30 @@ def _sanitize_table_name(filename: str) -> str:
     name = re.sub(r"[^a-zA-Z0-9_]", "_", stem)
     name = re.sub(r"_+", "_", name).strip("_")
     return name.lower() or "tabela"
+
+
+def _normalize_column_name(name: str) -> str:
+    """Make a column name SQL-safe: lowercase, ASCII-only, no spaces."""
+    s = unicodedata.normalize("NFKD", str(name)).encode("ascii", "ignore").decode("ascii")
+    s = re.sub(r"[^a-zA-Z0-9_]", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    return s.lower() or "col"
+
+
+def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Rename columns in-place to SQL-safe identifiers, deduplicating collisions."""
+    seen: dict[str, int] = {}
+    new_cols: list[str] = []
+    for c in df.columns:
+        norm = _normalize_column_name(c)
+        if norm in seen:
+            seen[norm] += 1
+            norm = f"{norm}_{seen[norm]}"
+        else:
+            seen[norm] = 1
+        new_cols.append(norm)
+    df.columns = new_cols
+    return df
 
 
 def _build_pdf_report(payload: dict) -> bytes:
@@ -402,6 +427,7 @@ def _handle_file_uploads() -> None:
             else:
                 df = pd.read_excel(f)
 
+            df = _normalize_columns(df)
             load_dataframe(df, table_name)
             schemas.append(_build_schema_from_df(df, table_name))
             tables[table_name] = {"filename": f.name, "row_count": len(df)}
