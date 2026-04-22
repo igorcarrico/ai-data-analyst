@@ -26,6 +26,7 @@ from src.sql_validator import detect_destructive_intent, validate_sql
 
 PAGE_TITLE = "AI Data Analyst"
 PAGE_ICON = "📊"
+DEMO_QUESTION_LIMIT = 30
 
 EXAMPLE_QUESTIONS = [
     "Qual o total de vendas por região?",
@@ -52,6 +53,32 @@ def _init_session_state() -> None:
     st.session_state.setdefault("history", [])
     st.session_state.setdefault("response_cache", {})
     st.session_state.setdefault("pending_question", "")
+    st.session_state.setdefault("user_api_key", "")
+    st.session_state.setdefault("question_count", 0)
+
+
+def _get_active_client():
+    """Prefer the user's own API key when provided; else fall back to the maintainer client."""
+    user_key = st.session_state.get("user_api_key", "").strip()
+    if user_key:
+        if SETTINGS.llm_provider == "anthropic":
+            from src.llm import AnthropicClient
+            return AnthropicClient(SETTINGS.llm_model, user_key)
+        if SETTINGS.llm_provider == "openai":
+            from src.llm import OpenAIClient
+            return OpenAIClient(SETTINGS.llm_model, user_key)
+    return _bootstrap()["client"]
+
+
+def _can_call_llm() -> bool:
+    if st.session_state.get("user_api_key", "").strip():
+        return True
+    return st.session_state.get("question_count", 0) < DEMO_QUESTION_LIMIT
+
+
+def _record_llm_call() -> None:
+    if not st.session_state.get("user_api_key", "").strip():
+        st.session_state["question_count"] = st.session_state.get("question_count", 0) + 1
 
 
 # ---------------------------------------------------------------------------
@@ -263,8 +290,27 @@ def _render_pdf_button(payload: dict, key_prefix: str) -> None:
 
 def _run_pipeline(question: str) -> dict:
     """Full pipeline: generate SQL, validate, execute with 1-shot retry, summarize."""
-    client = _bootstrap()["client"]
     start = time.perf_counter()
+
+    if not _can_call_llm():
+        duration_ms = (time.perf_counter() - start) * 1000
+        message = (
+            f"Limite de {DEMO_QUESTION_LIMIT} perguntas por sessão atingido na demo pública. "
+            "Cole sua própria chave Anthropic na barra lateral para continuar sem limites, "
+            "ou recarregue a página para iniciar uma nova sessão."
+        )
+        return {
+            "question": question,
+            "sql": "",
+            "ok": False,
+            "error": message,
+            "dataframe": None,
+            "insights": "",
+            "duration_ms": duration_ms,
+            "rate_limited": True,
+        }
+
+    client = _get_active_client()
 
     upload_ctx = st.session_state.get("upload_context")
     schema = upload_ctx["schema"] if upload_ctx else None
@@ -299,6 +345,7 @@ def _run_pipeline(question: str) -> dict:
         }
 
     try:
+        _record_llm_call()
         raw_sql = client.generate_sql(question, schema=schema, table_name=tbl_name)
         validation = validate_sql(raw_sql, allowed_tables=allowed)
 
@@ -380,7 +427,8 @@ def _get_response(question: str) -> dict:
         return cached
     payload = _run_pipeline(question)
     payload["cached"] = False
-    cache[key] = payload
+    if not payload.get("rate_limited"):
+        cache[key] = payload
     return payload
 
 
@@ -467,6 +515,29 @@ def _render_sidebar(inserted_rows: int) -> None:
         else:
             st.warning("Sem API key — rodando em modo heurístico offline.")
 
+        st.markdown("---")
+        st.subheader("🔑 Chave própria (opcional)")
+        st.text_input(
+            f"Sua API key {SETTINGS.llm_provider.capitalize()}",
+            type="password",
+            key="user_api_key",
+            placeholder="sk-ant-..." if SETTINGS.llm_provider == "anthropic" else "sk-...",
+            help=(
+                f"Opcional. Sem ela, a demo usa a chave do mantenedor "
+                f"(limite de {DEMO_QUESTION_LIMIT} perguntas/sessão). "
+                "A chave fica só na sua sessão — não é salva."
+            ),
+        )
+        remaining = max(0, DEMO_QUESTION_LIMIT - st.session_state.get("question_count", 0))
+        if st.session_state.get("user_api_key", "").strip():
+            st.success("Usando sua chave — sem limite.")
+        elif remaining == 0:
+            st.error("Limite da demo atingido. Cole sua chave para continuar.")
+        elif remaining <= 5:
+            st.warning(f"Demo: {remaining} perguntas restantes.")
+        else:
+            st.caption(f"Demo: {remaining} perguntas restantes nesta sessão.")
+
         upload_ctx = st.session_state.get("upload_context")
 
         if not upload_ctx and inserted_rows > 0:
@@ -506,6 +577,10 @@ def _render_sidebar(inserted_rows: int) -> None:
 
 
 def _render_result(payload: dict, key_prefix: str = "latest") -> None:
+    if payload.get("rate_limited"):
+        st.warning(f"🚦 {payload['error']}")
+        return
+
     if payload.get("blocked"):
         st.warning(f"🛡️ {payload['error']}")
         with st.expander("Detalhes técnicos", expanded=False):
@@ -532,11 +607,18 @@ def _render_result(payload: dict, key_prefix: str = "latest") -> None:
     explain_key = f"explain_{key_prefix}"
     if st.button("💬 Explicar essa query", key=f"btn_{explain_key}"):
         if "explanation" not in payload:
-            try:
-                with st.spinner("Pedindo ao LLM para explicar a query..."):
-                    payload["explanation"] = _bootstrap()["client"].explain_sql(payload["sql"])
-            except Exception as exc:
-                payload["explanation"] = f"_Não foi possível gerar a explicação: {exc}_"
+            if not _can_call_llm():
+                payload["explanation"] = (
+                    f"_Limite de {DEMO_QUESTION_LIMIT} perguntas por sessão atingido. "
+                    "Cole sua chave na barra lateral para continuar._"
+                )
+            else:
+                try:
+                    with st.spinner("Pedindo ao LLM para explicar a query..."):
+                        _record_llm_call()
+                        payload["explanation"] = _get_active_client().explain_sql(payload["sql"])
+                except Exception as exc:
+                    payload["explanation"] = f"_Não foi possível gerar a explicação: {exc}_"
         st.session_state[explain_key] = True
 
     if st.session_state.get(explain_key) and payload.get("explanation"):
@@ -605,6 +687,9 @@ def _render_result(payload: dict, key_prefix: str = "latest") -> None:
 
 def _render_comparison_panel(payload: dict, key_prefix: str) -> None:
     """Compact vertical render used inside the side-by-side comparison view."""
+    if payload.get("rate_limited"):
+        st.warning(f"🚦 {payload['error']}")
+        return
     if payload.get("blocked"):
         st.warning(f"🛡️ {payload['error']}")
         return
@@ -746,7 +831,8 @@ def _render_single_flow() -> None:
         st.session_state["pending_question"] = ""
         with st.spinner("Gerando SQL, executando e analisando..."):
             payload = _get_response(question.strip())
-        st.session_state["history"].append(payload)
+        if not payload.get("rate_limited"):
+            st.session_state["history"].append(payload)
         _render_result(payload)
     elif st.session_state["history"]:
         _render_result(st.session_state["history"][-1])
@@ -783,8 +869,10 @@ def _render_comparison_flow() -> None:
         with st.spinner("Executando as duas perguntas..."):
             payload_a = _get_response(question_a.strip())
             payload_b = _get_response(question_b.strip())
-        st.session_state["history"].append(payload_a)
-        st.session_state["history"].append(payload_b)
+        if not payload_a.get("rate_limited"):
+            st.session_state["history"].append(payload_a)
+        if not payload_b.get("rate_limited"):
+            st.session_state["history"].append(payload_b)
         st.session_state["comparison_payloads"] = (payload_a, payload_b)
         _render_comparison(payload_a, payload_b)
     elif st.session_state.get("comparison_payloads"):

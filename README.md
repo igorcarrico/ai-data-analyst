@@ -1,7 +1,7 @@
 # 📊 AI Data Analyst
 
 > **🌐 Demo ao vivo:** [ai-data-analyst-3rda.onrender.com](https://ai-data-analyst-3rda.onrender.com)
-> *(Hospedado no plano free do Render — a primeira visita após inatividade leva ~30s para acordar.)*
+> *(Hospedado no plano free do Render — a primeira visita após inatividade leva ~30s para acordar. Demo limitada a 30 perguntas por sessão; cole sua própria chave Anthropic na sidebar para uso sem limite — a chave fica só na sessão, não é salva.)*
 
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?logo=streamlit&logoColor=white)
